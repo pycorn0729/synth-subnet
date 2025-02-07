@@ -28,7 +28,7 @@ def generate_normal_distribution_predictions(
         std_dev = (a * t + b * t) / 2  # Standard deviation grows over time
         # Generate 100 samples for this time step
         predictions[:, t] = np.random.normal(mean_price, std_dev, num_simulations)
-    return predictions.tolist()
+    return predictions
 
 
 def generate_simulations(

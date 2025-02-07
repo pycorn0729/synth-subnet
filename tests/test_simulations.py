@@ -2,7 +2,7 @@ import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from synth.miner.simulations_brute import generate_simulations
+from synth.miner.simulations_multilstm import generate_simulations
 
 
 def test_generate_simulations():

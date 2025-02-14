@@ -1,143 +1,74 @@
 import os
 import numpy as np
-import requests
 import pandas as pd
-import tensorflow as tf
-import joblib
+from synth.miner.price_simulation import get_asset_price
+from synth.utils.helpers import convert_prices_to_time_format
 
+# Define the directory where predictions are stored
+PREDICTIONS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/"))
 
-from datetime import datetime, timedelta
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, BatchNormalization
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import load_model
-from tensorflow.keras.losses import Huber
-from synth.miner.price_simulation import (
-    simulate_crypto_price_paths,
-    get_asset_price,
-)
-from synth.utils.helpers import (
-    convert_prices_to_time_format,
-)
-
-
-
-
-MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../models/lstm_model.h5"))
-DATA_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/btc_historical_data.csv"))
-SCALER_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../models/scaler.pkl"))
-# Define the file path
-output_csv_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/predictions.csv"))
-
-
-def get_asset_price(asset="BTC"):
-    """
-    Retrieves the current price of the specified asset.
-    Currently, supports BTC via Pyth Network.
-
-    Returns:
-        float: Current asset price.
-
-
-
-    """
-    if asset == "BTC":
-        btc_price_id = (
-            "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
-        )
-        endpoint = f"https://hermes.pyth.network/api/latest_price_feeds?ids[]={btc_price_id}"  # TODO: this endpoint is deprecated
-        try:
-            response = requests.get(endpoint)
-            response.raise_for_status()
-            data = response.json()
-            if not data or len(data) == 0:
-                raise ValueError("No price data received")
-            price_feed = data[0]
-            price = float(price_feed["price"]["price"]) / (10**8)
-            return price
-        except Exception as e:
-            print(f"Error fetching {asset} price: {str(e)}")
-            return None
-    else:
-        # For other assets, implement accordingly
-        print(f"Asset '{asset}' not supported.")
-        return None
-
-def generate_price_predictions(asset, start_time, time_increment, time_length, num_simulations):
-    """Generate BTC price predictions using LSTM and Monte Carlo simulation."""
+def get_latest_predictions_file():
+    """Finds the latest version of the predictions CSV file."""
+    existing_files = [f for f in os.listdir(PREDICTIONS_DIR) if f.startswith("predictions_v") and f.endswith(".csv")]
     
-    num_steps = (time_length/time_increment) + 1
-    simulated_paths = np.zeros(num_simulations, num_steps)
-    # Load scaler for reversing normalization
-    scaler = joblib.load(SCALER_PATH)
+    if not existing_files:
+        raise FileNotFoundError("No predictions file found in the data directory.")
 
-    # Load trained LSTM model
-    model = load_model(MODEL_PATH)
+    # Extract version numbers and find the latest one
+    version_numbers = []
+    for filename in existing_files:
+        try:
+            version = int(filename.split("_v")[-1].split(".csv")[0])
+            version_numbers.append(version)
+        except ValueError:
+            continue
 
-    # Load historical data
-    df = pd.read_csv(DATA_PATH)
-    last_p = df[["close"]].values[-1]
-    # Extract closing prices and normalize
-    df["scaled_price"] = scaler.transform(df[["close"]].values)
+    if not version_numbers:
+        raise FileNotFoundError("No valid versioned predictions files found.")
 
-    if isinstance(start_time, str):
-        start_time = datetime.fromisoformat(start_time)  # Convert from string to datetime
-    start_time = start_time.replace(second=0, microsecond=0)
+    latest_version = max(version_numbers)
+    latest_file = f"predictions_v{latest_version}.csv"
 
-    # Generate timestamps for predictions (289 total points)
-    for i in range(num_simulations):
-        timestamps = [start_time + timedelta(seconds=i * time_increment) for i in range(time_length // time_increment + 1)]
-        last_30_prices = df["scaled_price"].values[-30:].reshape(1, 30, 1)
-        for j in range(len(timestamps)):  # Predict 289 points
-            predicted_normalized = model.predict(last_30_prices, verbose=0)[0][0]
-            predicted_price = scaler.inverse_transform([[predicted_normalized]])[0][0]
-            simulated_paths[i, j] = predicted_price    # Update input sequence for LSTM
-            last_30_prices = np.roll(last_30_prices, -1)
-            last_30_prices[0, -1, 0] = predicted_normalized
-    return simulated_paths  # List of lists, each with 289 values
-
+    return os.path.join(PREDICTIONS_DIR, latest_file)
 
 def generate_simulations(
     asset="BTC",
-    start_time= None,
+    start_time=None,
     time_increment=300,
     time_length=86400,
-    num_simulations=100,
+    num_simulations=1,
 ):
-    
     """
-    Generate simulated price paths.
+    Retrieve and format the latest simulated price paths.
 
     Parameters:
         asset (str): The asset to simulate. Default is 'BTC'.
-        start_time (str): The start time of the simulation. Defaults to current time.
+        start_time (str): The start time of the simulation. Required.
         time_increment (int): Time increment in seconds.
         time_length (int): Total time length in seconds.
-        num_simulations (int): Number of simulation runs.
+        num_simulations (int): Number of simulations to return.
 
     Returns:
-        numpy.ndarray: Simulated price paths.
+        list: Simulated price paths formatted with timestamps.
     """
-
     if start_time is None:
         raise ValueError("Start time must be provided.")
 
-    # current_price = get_asset_price(asset)
-    # if current_price is None:
-    #     raise ValueError(f"Failed to fetch current price for asset: {asset}")
+    # Load the latest predictions file
+    latest_file_path = get_latest_predictions_file()
+    print(f"Loading predictions from: {latest_file_path}")
 
+    # Load the Monte Carlo simulated prices (100 simulations × 289 time steps)
+    simulated_prices = pd.read_csv(latest_file_path, header=None).values
 
-    simulations = generate_price_predictions(
-    asset="BTC",
-    start_time= start_time,
-    time_increment=time_increment,
-    time_length=time_length,
-    num_simulations=num_simulations
-    )
+    # Ensure requested number of simulations does not exceed available data
+    if num_simulations > simulated_prices.shape[0]:
+        raise ValueError(f"Requested {num_simulations} simulations, but only {simulated_prices.shape[0]} are available.")
 
-    predictions = convert_prices_to_time_format(
-        simulations.tolist(), start_time, time_increment
-    )
+    # Select the requested number of simulations
+    selected_simulations = simulated_prices[:num_simulations].tolist()
 
-    
+    # Convert price simulations to time format
+    predictions = convert_prices_to_time_format(selected_simulations, start_time, time_increment)
+
     return predictions
